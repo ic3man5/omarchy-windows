@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "drebbe.windows",
+  "name": "Windows",
+  "version": "1.0.0",
+  "author": "drebbe",
+  "license": "MIT",
+  "description": "Running and minimized window switcher across all workspaces and layouts.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Windows",
+    "description": "Show and switch between open and minimized windows across every workspace.",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "left"
+  }
+}

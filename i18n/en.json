@@ -1,0 +1,23 @@
+{
+  "title": "Windows",
+  "summary.running": "%1 running",
+  "summary.runningAndMinimized": "%1 running · %2 minimized",
+  "action.restoreAll": "Restore all",
+  "tab.all": "All (%1)",
+  "tab.ws": "WS %1 (%2)",
+  "tab.minimized": "Minimized (%1)",
+  "empty.minimized": "No minimized windows.",
+  "empty.all": "No running windows.",
+  "badge.minimized": "MIN",
+  "badge.minimizedFrom": "MIN · WS %1",
+  "badge.ws": "WS %1",
+  "badge.wsMonitor": "M%1·WS %2",
+  "badge.specialScratchpad": "SCRATCH",
+  "badge.specialQconsole": "QCONSOLE",
+  "status.active": "Active",
+  "app.agentTerminal": "Agent Terminal",
+  "tooltip.summary": "%1 windows",
+  "tooltip.summaryMin": "%1 windows (%2 minimized)",
+  "hint.footer": "↑↓ select · ←→ filter · ↵ focus · x close · esc"
+}
+

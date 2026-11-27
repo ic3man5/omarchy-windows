@@ -4,8 +4,8 @@ An Omarchy Top-Bar window switcher widget and popup (`drebbe.windows`) that show
 
 ## Features
 
-- Top-bar summary chip (`Windows` or active count + minimized indicator)
-- Filter tabs for `All`, `WS <slot>`, and `Minimized`
+- Top-bar summary chip (window icon, total window count, and `<minimized>↓` + accent dot indicator when minimized windows exist)
+- Dynamic filter tabs with counts for `All (<n>)`, each populated workspace (`WS <slot> (<n>)` or `M<monitor>·WS <slot> (<n>)` on other monitors), and `Minimized (<n>)` when minimized windows exist
 - Works with both Wayland and XWayland windows, Chromium webapps, and Steam titles
 - Terminal process/CWD disambiguation when multiple terminal windows share a title
 - Keyboard navigation (`↑`/`↓`, `←`/`→`, `Enter` to focus/restore, `x` to close, `Esc` to close)
@@ -22,7 +22,7 @@ omarchy plugin add https://github.com/ic3man5/omarchy-windows --enable
 To place it right after the workspaces indicator on the left bar section:
 
 ```bash
-omarchy plugin enable drebbe.windows left:after:omarchy.workspaces
+omarchy plugin enable drebbe.windows left --after omarchy.workspaces
 ```
 
 ## Updating

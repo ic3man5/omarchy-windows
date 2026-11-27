@@ -44,6 +44,69 @@ function slotOf(workspaceId) {
   return ((id - 1) % 10) + 1
 }
 
+function workspaceFilterId(workspaceId) {
+  var id = Number(workspaceId)
+  if (!(id >= 1)) return ""
+  return "ws:" + Math.floor(id)
+}
+
+function parseWorkspaceFilterId(filterMode) {
+  var m = /^ws:([1-9][0-9]*)$/.exec(String(filterMode || ""))
+  return m ? parseInt(m[1], 10) : -1
+}
+
+function collectWorkspaceTabs(windows, activeWorkspaceId, ownBlock) {
+  var counts = {}
+  var list = windows || []
+  for (var i = 0; i < list.length; i++) {
+    var w = list[i]
+    if (!w || w.minimized || w.special) continue
+    var id = Number(w.workspaceId)
+    if (!(id >= 1)) continue
+    counts[id] = (counts[id] || 0) + 1
+  }
+
+  var activeId = Number(activeWorkspaceId)
+  var ids = Object.keys(counts).map(function(k) { return parseInt(k, 10) })
+  ids.sort(function(a, b) { return a - b })
+
+  var activeBlock = (ownBlock !== undefined && ownBlock !== null && Number(ownBlock) >= 0)
+    ? Number(ownBlock)
+    : (activeId >= 1 ? blockOf(activeId) : 0)
+  var tabs = []
+  for (var j = 0; j < ids.length; j++) {
+    var wsId = ids[j]
+    var blk = blockOf(wsId)
+    tabs.push({
+      id: workspaceFilterId(wsId),
+      workspaceId: wsId,
+      slot: slotOf(wsId),
+      block: blk,
+      sameBlock: blk === activeBlock,
+      count: counts[wsId]
+    })
+  }
+  return tabs
+}
+
+function filterWindows(windows, filterMode) {
+  var list = windows || []
+  if (filterMode === "all") return list
+  var targetWs = parseWorkspaceFilterId(filterMode)
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var w = list[i]
+    if (filterMode === "minimized") {
+      if (w.minimized) out.push(w)
+    } else if (targetWs >= 1) {
+      if (!w.minimized && !w.special && Number(w.workspaceId) === targetWs) out.push(w)
+    } else {
+      out.push(w)
+    }
+  }
+  return out
+}
+
 function extractChromeWebappHost(appId) {
   var m = /^chrome-([A-Za-z0-9._-]+)__-[A-Za-z0-9._-]+$/.exec(String(appId || ""))
   return m ? m[1].toLowerCase() : ""
@@ -85,8 +148,8 @@ function claimingEntryId(appId, entries) {
 function sortWindows(windows, activeWorkspaceId) {
   var list = (windows || []).slice()
   function rank(w) {
-    if (!w.minimized && w.workspaceId === activeWorkspaceId) return 0
-    if (!w.minimized && w.workspaceId >= 1) return 1
+    if (activeWorkspaceId >= 1 && !w.minimized && !w.special && w.workspaceId === activeWorkspaceId) return 0
+    if (!w.minimized && !w.special && w.workspaceId >= 1) return 1
     if (w.minimized) return 2
     return 3
   }
@@ -156,6 +219,10 @@ if (typeof module !== "undefined") {
     normalizeAddress: normalizeAddress,
     minimizedOriginWorkspace: minimizedOriginWorkspace,
     slotOf: slotOf,
+    workspaceFilterId: workspaceFilterId,
+    parseWorkspaceFilterId: parseWorkspaceFilterId,
+    collectWorkspaceTabs: collectWorkspaceTabs,
+    filterWindows: filterWindows,
     extractChromeWebappHost: extractChromeWebappHost,
     claimingEntryId: claimingEntryId,
     sortWindows: sortWindows,

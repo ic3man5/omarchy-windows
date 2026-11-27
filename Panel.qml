@@ -15,7 +15,7 @@ Panel {
   moduleName: "drebbe.windows"
   ipcTarget: "drebbe.windows"
 
-  // Forward BarIconButton size so Bar.qml's WidgetHost never collapses this slot to 0x0.
+  // Forward WidgetButton size so Bar.qml's WidgetHost never collapses this slot to 0x0.
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -26,7 +26,7 @@ Panel {
 
   property int selectedIndex: 0
   property bool cursorActive: true
-  property string filterMode: "all" // "all" | "current" | "minimized"
+  property string filterMode: "all" // "all" | "ws:<id>" | "minimized"
   readonly property int rowHeight: Style.space(46)
   readonly property int rowSpacing: Style.space(4)
 
@@ -39,14 +39,41 @@ Panel {
 
   // Resolve this bar's own monitor rather than always Hyprland.focusedMonitor.
   readonly property var monitor: {
+    var monitorsRev = Hyprland.monitors.values.length
     var win = root.QsWindow.window
     var screen = win ? win.screen : null
-    return screen ? Hyprland.monitorFor(screen) : Hyprland.focusedMonitor
+    return (screen && Hyprland.monitorFor(screen)) || Hyprland.focusedMonitor
   }
-  readonly property int activeWorkspaceId: monitor && monitor.activeWorkspace ? monitor.activeWorkspace.id : -1
-  readonly property int activeWorkspaceSlot: {
-    var slot = Model.slotOf(activeWorkspaceId)
-    return slot >= 1 ? slot : activeWorkspaceId
+  readonly property string monitorName: root.monitor ? root.monitor.name : ""
+  readonly property int activeWorkspaceId: monitor && monitor.activeWorkspace
+    ? monitor.activeWorkspace.id
+    : (Hyprland.focusedWorkspace ? Hyprland.focusedWorkspace.id : -1)
+
+  property var blocks: ({})
+
+  function readBlocks(text) {
+    var next = {}
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var fields = lines[i].split("\t")
+      if (fields.length >= 3 && fields[1] !== "") next[fields[1]] = parseInt(fields[0], 10)
+    }
+    root.blocks = next
+  }
+
+  FileView {
+    path: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/omarchy/monitor-workspaces"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.readBlocks(text())
+    onLoadFailed: root.readBlocks("")
+  }
+
+  readonly property int ownBlock: {
+    var b = root.blocks[root.monitorName]
+    if (b !== undefined) return b
+    return root.activeWorkspaceId >= 1 ? Model.blockOf(root.activeWorkspaceId) : 0
   }
 
   // Self-contained disk icon index so desktop icons (e.g. Telegram) resolve even
@@ -155,7 +182,7 @@ Panel {
     if (entry && entry.name) return String(entry.name)
     if (appId === "org.omarchy.agent") return strings.t("app.agentTerminal")
     if (String(appId).indexOf("steam_app_") === 0) return String(title || String(appId).slice("steam_app_".length))
-    return String(title || appId || "Window")
+    return String(title || appId || strings.t("app.unknownWindow"))
   }
 
   // Batched terminal process + cwd inspection when opened so identical `foot` rows
@@ -252,68 +279,76 @@ Panel {
     }
   }
 
+  function inspectToplevel(item) {
+    if (!item) return null
+    var wl = item.wayland
+    var ipc = item.lastIpcObject || ({})
+    var appId = (wl && wl.appId) ? String(wl.appId) : String(ipc.class || ipc.initialClass || "")
+    var itemWs = item.workspace
+    var ipcWs = ipc.workspace
+    var ws = itemWs || ipcWs
+    var wsId = ws && ws.id !== undefined ? Number(ws.id) : -1
+    var wsName = String((itemWs && itemWs.name) || (ipcWs && ipcWs.name) || "")
+    var minimized = Model.isMinimizedWorkspace(wsName)
+    var special = Model.isSpecialWorkspace(wsName)
+    if (!minimized && !special && !(wsId >= 1)) return null
+    if (wl && wl.parent && !minimized) return null
+    var title = (wl && wl.title) ? String(wl.title) : String(ipc.title || ipc.initialTitle || appId)
+    var address = Model.normalizeAddress(item.address || ipc.address)
+    if (!appId && !title && !address) return null
+    return {
+      wl: wl,
+      ipc: ipc,
+      appId: appId,
+      title: title,
+      address: address,
+      wsId: wsId,
+      wsName: wsName,
+      minimized: minimized,
+      special: special
+    }
+  }
+
   // Lightweight bar counters evaluated continuously without rebuilding Repeater rows.
   readonly property var barCounts: {
     var toplevels = Hyprland.toplevels.values || []
     var total = 0
     var min = 0
-    var current = 0
     for (var i = 0; i < toplevels.length; i++) {
-      var item = toplevels[i]
-      var wl = item.wayland
-      if (wl && wl.parent) continue
-      var ipc = item.lastIpcObject || ({})
-      var appId = (wl && wl.appId) ? String(wl.appId) : String(ipc.class || ipc.initialClass || "")
-      if (!appId) continue
-      var ws = item.workspace || ipc.workspace
-      var wsId = ws && ws.id !== undefined ? Number(ws.id) : -1
-      var wsName = ws && ws.name !== undefined ? String(ws.name) : ""
-      var minWs = Model.isMinimizedWorkspace(wsName)
-      var specialWs = Model.isSpecialWorkspace(wsName)
-      if (!minWs && !specialWs && wsId < 1) continue
+      var info = inspectToplevel(toplevels[i])
+      if (!info) continue
       total++
-      if (minWs) min++
-      else if (wsId === root.activeWorkspaceId) current++
+      if (info.minimized) min++
     }
-    return { total: total, minimized: min, current: current }
+    return { total: total, minimized: min }
   }
   readonly property int totalCount: barCounts.total
   readonly property int minimizedCount: barCounts.minimized
-  readonly property int currentCount: barCounts.current
 
-  // Full window entries built only while the panel is open to prevent background churn.
+  // Full window entries built while the panel is open (or fading out) to prevent background churn.
   readonly property var allWindows: {
-    if (!root.opened) return []
+    if (!root.opened && !panel.visible) return []
     var appsRev = DesktopEntries.applications.values.length
     var iconsRev = Object.keys(root.iconIndex).length
     var toplevels = Hyprland.toplevels.values || []
     var list = []
     for (var i = 0; i < toplevels.length; i++) {
-      var item = toplevels[i]
-      var wl = item.wayland
-      if (wl && wl.parent) continue
-      var ipc = item.lastIpcObject || ({})
-      var appId = (wl && wl.appId) ? String(wl.appId) : String(ipc.class || ipc.initialClass || "")
-      if (!appId) continue
-      var ws = item.workspace || ipc.workspace
-      var wsId = ws && ws.id !== undefined ? Number(ws.id) : -1
-      var wsName = ws && ws.name !== undefined ? String(ws.name) : ""
-      var minimized = Model.isMinimizedWorkspace(wsName)
-      var special = Model.isSpecialWorkspace(wsName)
-      if (!minimized && !special && wsId < 1) continue
-      var title = (wl && wl.title) ? String(wl.title) : String(ipc.title || ipc.initialTitle || appId)
+      var info = inspectToplevel(toplevels[i])
+      if (!info) continue
+      var wl = info.wl
+      var ipc = info.ipc
       var focusId = ipc.focusHistoryID !== undefined ? Number(ipc.focusHistoryID) : 9999
-      var entry = root.entryForAppId(appId)
+      var entry = info.appId ? root.entryForAppId(info.appId) : null
       list.push({
-        address: Model.normalizeAddress(item.address || ipc.address),
-        appId: appId,
-        appName: root.appNameFor(entry, appId, title),
-        iconSource: root.iconSourceFor(entry, appId),
-        title: title,
-        workspaceId: wsId,
-        workspaceName: wsName,
-        minimized: minimized,
-        special: special,
+        address: info.address,
+        appId: info.appId,
+        appName: root.appNameFor(entry, info.appId, info.title),
+        iconSource: root.iconSourceFor(entry, info.appId),
+        title: info.title,
+        workspaceId: info.wsId,
+        workspaceName: info.wsName,
+        minimized: info.minimized,
+        special: info.special,
         activated: wl ? !!wl.activated : (focusId === 0),
         focusHistoryID: focusId,
         pid: ipc.pid !== undefined ? Number(ipc.pid) : 0,
@@ -324,21 +359,62 @@ Panel {
     return Model.disambiguateWindows(Model.sortWindows(list, root.activeWorkspaceId), root.pidInfo)
   }
 
-  readonly property var visibleWindows: {
-    if (!root.opened) return []
-    if (filterMode === "all") return allWindows
-    var out = []
-    for (var i = 0; i < allWindows.length; i++) {
-      var w = allWindows[i]
-      if (filterMode === "minimized" && w.minimized) out.push(w)
-      else if (filterMode === "current" && !w.minimized && !w.special && w.workspaceId === activeWorkspaceId) out.push(w)
+  readonly property var workspaceTabs: (root.opened || panel.visible)
+    ? Model.collectWorkspaceTabs(root.allWindows, root.activeWorkspaceId, root.ownBlock)
+    : []
+
+  readonly property var filterTabs: {
+    if (!root.opened && !panel.visible) return []
+    var windows = root.allWindows
+    var minCount = 0
+    for (var j = 0; j < windows.length; j++) {
+      if (windows[j].minimized) minCount++
     }
-    return out
+    var tabs = [
+      { id: "all", label: strings.t("tab.all").arg(Commons.I18n.formatNumber(windows.length)) }
+    ]
+    var wsTabs = root.workspaceTabs
+    for (var i = 0; i < wsTabs.length; i++) {
+      var wt = wsTabs[i]
+      var wsNum = Commons.I18n.formatNumber(wt.slot >= 1 ? wt.slot : wt.workspaceId)
+      var countNum = Commons.I18n.formatNumber(wt.count)
+      var label = wt.sameBlock
+        ? strings.t("tab.ws").arg(wsNum).arg(countNum)
+        : strings.t("tab.wsMonitor").arg(Commons.I18n.formatNumber(wt.block + 1)).arg(wsNum).arg(countNum)
+      tabs.push({ id: wt.id, label: label })
+    }
+    if (minCount > 0) {
+      tabs.push({ id: "minimized", label: strings.t("tab.minimized").arg(Commons.I18n.formatNumber(minCount)) })
+    }
+    return tabs
+  }
+
+  readonly property var visibleWindows: (root.opened || panel.visible)
+    ? Model.filterWindows(root.allWindows, root.filterMode)
+    : []
+
+  function hasFilterTab(modeId) {
+    var tabs = root.filterTabs
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].id === modeId) return true
+    }
+    return false
+  }
+
+  function ensureValidFilterMode() {
+    if (!root.opened) return
+    if (!root.hasFilterTab(root.filterMode)) root.filterMode = "all"
+  }
+
+  onAllWindowsChanged: {
+    if (root.opened) pidDebounce.restart()
   }
 
   onMinimizedCountChanged: {
     if (minimizedCount === 0 && filterMode === "minimized") filterMode = "all"
   }
+
+  onFilterTabsChanged: ensureValidFilterMode()
 
   onOpenedChanged: {
     if (opened) {
@@ -347,8 +423,14 @@ Panel {
       Hyprland.refreshToplevels()
       cursorActive = true
       selectedIndex = 0
-      if (filterMode === "minimized" && minimizedCount === 0) filterMode = "all"
       refreshTerminalPids(true)
+      Qt.callLater(function() {
+        if (!root.opened) return
+        root.ensureValidFilterMode()
+        var flick = panel.loadedContent ? panel.loadedContent.listFlick : null
+        if (flick) flick.contentY = 0
+        root.ensureRowVisible(root.selectedIndex)
+      })
     }
   }
 
@@ -381,10 +463,13 @@ Panel {
         name === "moveworkspacev2" ||
         name === "changeworkspaceid" ||
         name === "focusedmon" ||
+        name === "focusedmonv2" ||
+        name === "activespecial" ||
+        name === "activespecialv2" ||
         name === "fullscreen"
       ) {
         hyprRefreshDebounce.restart()
-      } else if (root.opened && (name === "activewindow" || name === "windowtitlev2")) {
+      } else if (root.opened && (name === "activewindow" || name === "activewindowv2" || name === "windowtitlev2")) {
         hyprRefreshDebounce.restart()
       }
     }
@@ -392,6 +477,7 @@ Panel {
 
   Component.onCompleted: iconIndexScan.running = true
   Component.onDestruction: {
+    if (root.opened) root.close()
     iconIndexScan.running = false
     pidProc.running = false
   }
@@ -419,7 +505,13 @@ Panel {
         steps.push('hl.dsp.workspace.toggle_special("' + specialName + '")')
       }
     } else if (win.minimized) {
-      if (!(root.activeWorkspaceId >= 1)) return
+      var targetWs = root.activeWorkspaceId >= 1
+        ? root.activeWorkspaceId
+        : Model.minimizedOriginWorkspace(win.tags)
+      if (!(targetWs >= 1)) {
+        root.close()
+        return
+      }
       steps.push('hl.dsp.window.set_prop({ prop = "no_anim", value = "1", ' + target + ' })')
       var tags = win.tags || []
       for (var i = 0; i < tags.length; i++) {
@@ -428,7 +520,7 @@ Panel {
           steps.push('hl.dsp.window.tag({ tag = "-' + t + '", ' + target + ' })')
         }
       }
-      steps.push('hl.dsp.window.move({ workspace = "' + root.activeWorkspaceId + '", ' + target + ' })')
+      steps.push('hl.dsp.window.move({ workspace = "' + targetWs + '", ' + target + ' })')
       after.push('hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", ' + target + ' })')
     }
 
@@ -444,13 +536,16 @@ Panel {
   }
 
   function restoreAllMinimized() {
-    if (!(root.activeWorkspaceId >= 1)) return
     var steps = []
     var after = []
     var firstTarget = ""
     for (var i = 0; i < allWindows.length; i++) {
       var w = allWindows[i]
       if (!w.minimized) continue
+      var targetWs = root.activeWorkspaceId >= 1
+        ? root.activeWorkspaceId
+        : Model.minimizedOriginWorkspace(w.tags)
+      if (!(targetWs >= 1)) continue
       var address = Model.normalizeAddress(w.address)
       if (!address) continue
       var target = 'window = "address:' + address + '"'
@@ -463,7 +558,7 @@ Panel {
           steps.push('hl.dsp.window.tag({ tag = "-' + t + '", ' + target + ' })')
         }
       }
-      steps.push('hl.dsp.window.move({ workspace = "' + root.activeWorkspaceId + '", ' + target + ' })')
+      steps.push('hl.dsp.window.move({ workspace = "' + targetWs + '", ' + target + ' })')
       after.push('hl.dsp.window.set_prop({ prop = "no_anim", value = "unset", ' + target + ' })')
     }
     if (steps.length > 0) {
@@ -489,7 +584,7 @@ Panel {
 
   function ensureRowVisible(idx) {
     var flick = panel.loadedContent ? panel.loadedContent.listFlick : null
-    if (!flick || idx < 0) return
+    if (!flick || idx < 0 || idx >= root.visibleWindows.length || flick.height <= 0) return
     var rowTop = idx * (root.rowHeight + root.rowSpacing)
     var rowBottom = rowTop + root.rowHeight
     if (rowTop < flick.contentY) flick.contentY = rowTop
@@ -505,10 +600,17 @@ Panel {
   }
 
   function cycleFilter(delta) {
-    var modes = root.minimizedCount > 0 ? ["all", "current", "minimized"] : ["all", "current"]
-    var idx = modes.indexOf(filterMode)
+    var tabs = root.filterTabs
+    if (tabs.length === 0) return
+    var idx = -1
+    for (var i = 0; i < tabs.length; i++) {
+      if (tabs[i].id === filterMode) {
+        idx = i
+        break
+      }
+    }
     if (idx < 0) idx = 0
-    filterMode = modes[(idx + delta + modes.length) % modes.length]
+    filterMode = tabs[(idx + delta + tabs.length) % tabs.length].id
     selectedIndex = 0
     ensureRowVisible(0)
   }
@@ -530,26 +632,77 @@ Panel {
     text: button.labelText
   }
 
-  BarIconButton {
+  WidgetButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󱂬"
-    labelText: !button.vertical && root.totalCount > 0
+    labelVisible: false
+    hasVisualContent: true
+    fontSize: Style.bar.iconFont
+    readonly property string labelText: !button.vertical && root.totalCount > 0
       ? (root.minimizedCount > 0
           ? (Commons.I18n.formatNumber(root.totalCount) + " (" + Commons.I18n.formatNumber(root.minimizedCount) + "↓)")
           : Commons.I18n.formatNumber(root.totalCount))
       : ""
-    slotSize: !button.vertical && labelText !== ""
+    readonly property real slotSize: !button.vertical && labelText !== ""
       ? Math.max(Style.bar.iconSlot, Math.ceil(Style.bar.iconCanvas + Style.space(4) + buttonLabelMetrics.advanceWidth + Style.space(14)))
       : Style.bar.iconSlot
+    fixedWidth: vertical ? -1 : slotSize
+    fixedHeight: vertical ? slotSize : -1
     active: root.opened
     useActiveColor: root.opened
-    tooltipText: root.minimizedCount > 0
-      ? strings.t("tooltip.summaryMin").arg(Commons.I18n.formatNumber(root.totalCount)).arg(Commons.I18n.formatNumber(root.minimizedCount))
-      : strings.t("tooltip.summary").arg(Commons.I18n.formatNumber(root.totalCount))
+    tooltipText: {
+      var totalLabel = strings.tn("tooltip.summary", root.totalCount).arg(Commons.I18n.formatNumber(root.totalCount))
+      if (root.minimizedCount > 0) {
+        var minLabel = strings.tn("summary.minimizedCount", root.minimizedCount).arg(Commons.I18n.formatNumber(root.minimizedCount))
+        return strings.t("tooltip.summaryMin").arg(totalLabel).arg(minLabel)
+      }
+      return totalLabel
+    }
     onPressed: function(b) {
       if (b === Qt.LeftButton) root.toggle()
+    }
+
+    Item {
+      id: buttonContent
+      x: (button.width - width) / 2
+      y: (button.height - height) / 2
+      scale: button.pressScale
+      width: Style.bar.iconCanvas + (buttonCountLabel.visible ? buttonCountLabel.implicitWidth + Style.space(4) : 0)
+      height: Style.bar.iconCanvas
+
+      OpticalGlyph {
+        x: buttonContent.LayoutMirroring.enabled && buttonCountLabel.visible
+          ? buttonCountLabel.implicitWidth + Style.space(4)
+          : 0
+        width: Style.bar.iconCanvas
+        height: Style.bar.iconCanvas
+        text: "󱂬"
+        fontFamily: button.fontFamily
+        fontSize: button.fontSize
+        paintedSize: Style.bar.iconSize
+        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        rotation: button.textRotation
+      }
+
+      Text {
+        id: buttonCountLabel
+        visible: button.labelText !== ""
+        x: buttonContent.LayoutMirroring.enabled ? 0 : Style.bar.iconCanvas + Style.space(4)
+        y: (parent.height - height) / 2
+          + (buttonLabelFontMetrics.descent - buttonLabelFontMetrics.ascent + buttonLabelFontMetrics.tightBoundingRect("0").height) / 2
+        textFormat: Text.PlainText
+        text: button.labelText
+        font.family: button.fontFamily
+        font.pixelSize: button.fontSize
+        color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+        renderType: Text.NativeRendering
+      }
+
+      FontMetrics {
+        id: buttonLabelFontMetrics
+        font: buttonCountLabel.font
+      }
     }
 
     Rectangle {
@@ -597,6 +750,7 @@ Panel {
         spacing: Style.space(10)
 
         Item {
+          id: headerRow
           width: parent.width
           implicitHeight: Math.max(headerLabels.implicitHeight, restoreBtn.implicitHeight)
 
@@ -609,6 +763,8 @@ Panel {
             spacing: Style.space(2)
 
             Text {
+              width: parent.width
+              elide: Text.ElideRight
               textFormat: Text.PlainText
               text: strings.t("title")
               color: Commons.Color.popups.text
@@ -618,10 +774,17 @@ Panel {
             }
 
             Text {
+              width: parent.width
+              elide: Text.ElideRight
               textFormat: Text.PlainText
-              text: root.minimizedCount > 0
-                ? strings.t("summary.runningAndMinimized").arg(Commons.I18n.formatNumber(root.totalCount)).arg(Commons.I18n.formatNumber(root.minimizedCount))
-                : strings.t("summary.running").arg(Commons.I18n.formatNumber(root.totalCount))
+              text: {
+                var runningLabel = strings.tn("summary.running", root.totalCount).arg(Commons.I18n.formatNumber(root.totalCount))
+                if (root.minimizedCount > 0) {
+                  var minLabel = strings.tn("summary.minimizedCount", root.minimizedCount).arg(Commons.I18n.formatNumber(root.minimizedCount))
+                  return strings.t("summary.runningAndMinimized").arg(runningLabel).arg(minLabel)
+                }
+                return runningLabel
+              }
               color: root.minimizedCount > 0 ? Commons.Color.accent : Util.alpha(Commons.Color.popups.text, 0.65)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -661,21 +824,17 @@ Panel {
           }
         }
 
-        Row {
+        Flow {
+          id: filterFlow
           width: parent.width
           spacing: Style.space(6)
 
           Repeater {
-            model: [
-              { id: "all", label: strings.t("tab.all").arg(Commons.I18n.formatNumber(root.totalCount)) },
-              { id: "current", label: strings.t("tab.ws").arg(Commons.I18n.formatNumber(root.activeWorkspaceSlot)).arg(Commons.I18n.formatNumber(root.currentCount)) },
-              { id: "minimized", label: strings.t("tab.minimized").arg(Commons.I18n.formatNumber(root.minimizedCount)) }
-            ]
+            model: root.filterTabs
 
             delegate: Rectangle {
               required property var modelData
               readonly property bool isCurrent: root.filterMode === modelData.id
-              visible: modelData.id !== "minimized" || root.minimizedCount > 0
               height: tabLabel.implicitHeight + Style.space(8)
               width: tabLabel.implicitWidth + Style.space(16)
               radius: Style.cornerRadius
@@ -709,13 +868,18 @@ Panel {
           }
         }
 
-        PanelSeparator { width: parent.width }
+        PanelSeparator {
+          id: listSeparator
+          width: parent.width
+        }
 
         Text {
           visible: root.visibleWindows.length === 0
           width: parent.width
           textFormat: Text.PlainText
-          text: root.filterMode === "minimized" ? strings.t("empty.minimized") : strings.t("empty.all")
+          text: root.filterMode === "minimized"
+            ? strings.t("empty.minimized")
+            : (Model.parseWorkspaceFilterId(root.filterMode) >= 1 ? strings.t("empty.ws") : strings.t("empty.all"))
           color: Util.alpha(Commons.Color.popups.text, 0.65)
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -728,23 +892,37 @@ Panel {
           id: listFlick
           visible: root.visibleWindows.length > 0
           width: parent.width
-          readonly property real maxListHeight: Math.max(Style.space(260), Math.round((panel.screen ? panel.screen.height : 900) * 0.62))
+          readonly property real maxCardContentHeight: panel.availableCardHeight > 0
+            ? Math.max(Style.space(120), panel.availableCardHeight - panel.verticalContentInset)
+            : 9999
+          readonly property real chromeHeight: headerRow.implicitHeight
+            + filterFlow.implicitHeight + column.spacing
+            + listSeparator.implicitHeight + column.spacing
+            + footerHint.implicitHeight + column.spacing * 2
+          readonly property real maxListHeight: Math.max(
+            Style.space(80),
+            Math.min(
+              Math.round((panel.screen ? panel.screen.height : 900) * 0.62),
+              Math.floor(maxCardContentHeight - chromeHeight)
+            )
+          )
           height: Math.min(listColumn.implicitHeight, maxListHeight)
           contentWidth: width
           contentHeight: listColumn.implicitHeight
           clip: true
           boundsBehavior: Flickable.StopAtBounds
           ScrollBar.vertical: ScrollBar {
+            id: listScroll
             policy: listFlick.contentHeight > listFlick.height ? ScrollBar.AlwaysOn : ScrollBar.AsNeeded
           }
 
           Column {
             id: listColumn
-            width: listFlick.width
+            width: listFlick.width - (listFlick.contentHeight > listFlick.height ? listScroll.width + Style.space(4) : 0)
             spacing: root.rowSpacing
 
             Repeater {
-              model: root.opened ? root.visibleWindows : []
+              model: (root.opened || panel.visible) ? root.visibleWindows : []
 
               delegate: Rectangle {
                 required property var modelData
@@ -756,9 +934,15 @@ Panel {
                 readonly property int originWs: modelData.minimized ? Model.minimizedOriginWorkspace(modelData.tags) : -1
                 readonly property string wsBadge: {
                   if (modelData.minimized) {
-                    return originWs >= 1
-                      ? strings.t("badge.minimizedFrom").arg(Commons.I18n.formatNumber(Model.slotOf(originWs)))
-                      : strings.t("badge.minimized")
+                    if (originWs < 1) return strings.t("badge.minimized")
+                    var originSlot = Model.slotOf(originWs)
+                    var originBlk = Model.blockOf(originWs)
+                    if (originBlk !== root.ownBlock) {
+                      return strings.t("badge.minimizedFromMonitor")
+                        .arg(Commons.I18n.formatNumber(originBlk + 1))
+                        .arg(Commons.I18n.formatNumber(originSlot))
+                    }
+                    return strings.t("badge.minimizedFrom").arg(Commons.I18n.formatNumber(originSlot))
                   }
                   if (modelData.special) {
                     var sn = Model.specialWorkspaceShortName(modelData.workspaceName)
@@ -768,8 +952,7 @@ Panel {
                   }
                   var slot = Model.slotOf(modelData.workspaceId)
                   var blk = Model.blockOf(modelData.workspaceId)
-                  var activeBlk = Model.blockOf(root.activeWorkspaceId)
-                  if (slot >= 1 && blk !== activeBlk) {
+                  if (slot >= 1 && blk !== root.ownBlock) {
                     return strings.t("badge.wsMonitor").arg(Commons.I18n.formatNumber(blk + 1)).arg(Commons.I18n.formatNumber(slot))
                   }
                   return strings.t("badge.ws").arg(Commons.I18n.formatNumber(slot >= 1 ? slot : modelData.workspaceId))
@@ -855,7 +1038,9 @@ Panel {
                     elide: Text.ElideRight
                     text: sameTitleAndApp
                       ? strings.t("status.active")
-                      : (modelData.appName + (modelData.activated ? (" · " + strings.t("status.active")) : ""))
+                      : (modelData.activated
+                          ? strings.t("status.appActive").arg(modelData.appName).arg(strings.t("status.active"))
+                          : modelData.appName)
                     color: modelData.activated ? Commons.Color.accent : Util.alpha(Commons.Color.popups.text, 0.65)
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
@@ -917,6 +1102,7 @@ Panel {
         }
 
         Text {
+          id: footerHint
           width: parent.width
           textFormat: Text.PlainText
           text: strings.t("hint.footer")
